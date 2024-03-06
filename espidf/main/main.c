@@ -31,7 +31,7 @@
 #define EXAMPLE_DEVICE_NAME "ESP_SPP_ACCEPTOR"
 #define SPP_SHOW_DATA 1
 #define SPP_SHOW_SPEED 0
-#define SPP_SHOW_MODE SPP_SHOW_SPEED    /*Choose show mode: show data or speed*/
+#define SPP_SHOW_MODE SPP_SHOW_DATA // SPP_SHOW_SPEED    /*Choose show mode: show data or speed*/
 
 static const esp_spp_mode_t esp_spp_mode = ESP_SPP_MODE_CB;
 static const bool esp_spp_enable_l2cap_ertm = true;
@@ -41,6 +41,8 @@ static long data_num = 0;
 
 static const esp_spp_sec_t sec_mask = ESP_SPP_SEC_AUTHENTICATE;
 static const esp_spp_role_t role_slave = ESP_SPP_ROLE_SLAVE;
+
+static SliderState d_state;
 
 static char *bda2str(uint8_t * bda, char *str, size_t size)
 {
@@ -113,7 +115,7 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         ESP_LOGI(SPP_TAG, "ESP_SPP_DATA_IND_EVT len:%d handle:%"PRIu32,
                  param->data_ind.len, param->data_ind.handle);
         d_state.handle = param->data_ind.handle;
-        ESP_LOGI(SLIDER_TAG, "PARSE RESULT = %d", slider_task(param->data_ind.data, param->data_ind.len));
+        ESP_LOGI(SLIDER_TAG, "PARSE RESULT = %d", slider_task((char*)(param->data_ind.data), param->data_ind.len, &d_state));
         if (param->data_ind.len < 128 && !(d_state.data_ready)) {
             d_state.req_len = param->data_ind.len;
             memcpy(d_state.request, param->data_ind.data, param->data_ind.len); 
@@ -214,22 +216,20 @@ static void slider_comm_task(void * data)
     uint8_t cnt = 0;
     while (1) {
         if (state->data_ready) {
-            //printf("incoming %ld, %s\n", state->req_len, state->request); // Kludge
-            //memset(state->request, 0, 128); // Kludge
+            printf("incoming %ld, %s\n", state->req_len, state->request); // Kludge
+            memset(state->request, 0, 128); // Kludge
             state->data_ready = false;
-            //sprintf(state->answer, "hep %3.1f, %3.1f, %3.1f\n", state->task_x, state->task_v, state->task_a); // Kludge
-            //state->answer[0] = 'h';state->answer[1] = 'e';state->answer[2] = 'p';
-            //state->answer[3] = state->cnt & 0xFF;
-            //state->answer[4] = '\n';
-            // esp_spp_write(state->handle, strlen(state->answer), (uint8_t*)(state->answer));
+            char answer[128];
+            sprintf(answer, "hep %3.1f, %3.1f, %3.1f\n", state->task_x, state->task_v, state->task_a); // Kludge
+            esp_spp_write(state->handle, strlen(answer), (uint8_t*)(answer));
 
-            state->cmd = SLDR_CMD_START;
+            // state->cmd = SLDR_CMD_NONE;
             switch (state->cmd)
             {
                 case SLDR_CMD_START:
                     slider_enable();
                     vTaskDelay( pdMS_TO_TICKS(10));
-                    if (slider_start() != 0) {
+                    if (slider_start(state) != 0) {
                         slider_stop();
                         slider_disable();
                     }
@@ -245,10 +245,10 @@ static void slider_comm_task(void * data)
             }
         } else {
             cnt++;
-            if (cnt % 10 == 0) {
+            if (cnt % 10 == 0 && state->write_done) {
                 char msg[128];
                 sprintf(msg, "X%3.1f S%3.1f\n", state->cur_x, state->cur_v);
-                //esp_spp_write(state->handle, strlen(msg), (uint8_t*)(msg)); // Kludge
+                esp_spp_write(state->handle, strlen(msg), (uint8_t*)(msg)); // Kludge
             }
             vTaskDelay( pdMS_TO_TICKS(10));
         }
@@ -259,9 +259,10 @@ static void slider_comm_task(void * data)
 void app_main(void)
 {
 
+	//SliderState d_state;
     d_state.is_connected = false;
-    d_state.write_done = true;
-    d_state.data_ready = true; // Kludge
+    d_state.write_done = false;
+    d_state.data_ready = false; 
     d_state.cnt = 0;
 
     char bda_str[18] = {0};
@@ -272,7 +273,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK( ret );
 
-    slider_init();
+    slider_init(&d_state);
     xTaskCreate(slider_comm_task, "slidercomm", 2048, &d_state, configMAX_PRIORITIES - 1, NULL); // kludge
 
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
@@ -362,12 +363,15 @@ static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * da
     }
 
     if (state->cur_step <= state->task_acc_steps) {
-        //state->cur_v = sqrt(fabs( 2*state->task_a*(float)(state->cur_step)/(float)(STEPS_PER_MM) ));
-    } else if (state->cur_step >= state->task_step - state->task_acc_steps) {
-        state->cur_v = sqrt(fabs( 2*state->task_a*(float)(state->task_step-state->cur_step)/(float)(STEPS_PER_MM) ));
+        state->cur_v = 10; //sqrt(fabs( 2.0 * (state->task_a) * (float)(state->cur_step) / (float)(STEPS_PER_MM) ));
+    } else if (state->cur_step >= (state->task_step - state->task_acc_steps)) {
+    	//float d_step = (float)((state->task_step)-(state->cur_step));
+    	//float v_sqr = fabs( 2.0*(state->task_a)*d_step / ((float)(STEPS_PER_MM)) );
+    	//float new_v = sqrt(v_sqr);
+        state->cur_v = 10; //new_v;
     }
 
-    state->cur_period = state->cur_v == 0 ? (float)(TIMER_FREQ) * 1000.0 / (float)(STEPS_PER_MM) : round((float)(TIMER_FREQ) / (state->cur_v * (float)(STEPS_PER_MM)));
+    state->cur_period = 1000; //state->cur_v == 0 ? (float)(TIMER_FREQ) * 1000.0 / (float)(STEPS_PER_MM) : round((float)(TIMER_FREQ) / ((state->cur_v) * (float)(STEPS_PER_MM)));
 
     GPIO.out_w1tc = (1ULL << SLDR_STEP_PIN);
     s_alarm_cfg.alarm_count = state->cur_period;

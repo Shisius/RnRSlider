@@ -58,7 +58,7 @@ typedef struct _slider_state
 	uint8_t cmd;
 } SliderState;
 
-volatile SliderState d_state;
+//volatile SliderState d_state;
 
 static inline void slider_stop()
 {
@@ -76,31 +76,31 @@ static inline void slider_disable()
 	gpio_set_level((gpio_num_t)SLDR_EN_PIN, 1);
 }
 
-static inline int slider_start()
+static inline int slider_start(SliderState * d_state)
 {
-	d_state.cur_step = 0;
-	if (d_state.task_x == d_state.cur_x)
+	d_state->cur_step = 0;
+	if (d_state->task_x == d_state->cur_x)
 		return 1;
-	if (d_state.task_x < d_state.cur_x) {
-		d_state.dir = false;
+	if (d_state->task_x < d_state->cur_x) {
+		d_state->dir = false;
 	} else {
-		d_state.dir = true;
+		d_state->dir = true;
 	}
 
-	d_state.task_a = fabs(d_state.task_a);
-	d_state.task_step = round(fabs(d_state.task_x - d_state.cur_x) * (float)(STEPS_PER_MM));
-	d_state.task_acc_steps = round( (d_state.task_v*d_state.task_v / (2 * d_state.task_a))* (float)(STEPS_PER_MM) );
-	if ( d_state.task_acc_steps*2 > d_state.task_step )
-		d_state.task_acc_steps = d_state.task_step/2;
-	d_state.task_v = sqrt(fabs((float)(d_state.task_acc_steps) * 2 * d_state.task_a / (float)(STEPS_PER_MM) ));
+	d_state->task_a = fabs(d_state->task_a);
+	d_state->task_step = round(fabs(d_state->task_x - d_state->cur_x) * (float)(STEPS_PER_MM));
+	d_state->task_acc_steps = round( (d_state->task_v*d_state->task_v / (2 * d_state->task_a))* (float)(STEPS_PER_MM) );
+	if ( d_state->task_acc_steps*2 > d_state->task_step )
+		d_state->task_acc_steps = d_state->task_step/2;
+	d_state->task_v = sqrt(fabs((float)(d_state->task_acc_steps) * 2 * d_state->task_a / (float)(STEPS_PER_MM) ));
 
-	d_state.cur_period = round(TIMER_FREQ / (d_state.task_v * (float)(STEPS_PER_MM)/d_state.task_acc_steps));
+	d_state->cur_period = round(TIMER_FREQ / (d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
 
 	//slider_enable();
 	//vTaskDelay(pdMS_TO_TICKS(10));
-	gpio_set_level((gpio_num_t)SLDR_DIR_PIN, d_state.dir);
+	gpio_set_level((gpio_num_t)SLDR_DIR_PIN, d_state->dir);
 
-	s_alarm_cfg.alarm_count = d_state.cur_period;
+	s_alarm_cfg.alarm_count = d_state->cur_period;
     gptimer_set_alarm_action(s_timer_handle, &s_alarm_cfg);
 	gptimer_enable(s_timer_handle);
     gptimer_start(s_timer_handle);
@@ -109,7 +109,7 @@ static inline int slider_start()
 
 static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * data, void * obj);
 
-static inline void slider_init()
+static inline void slider_init(SliderState * d_state)
 {
 	//uint64_t mask = (1ULL << SLDR_STEP_PIN) | (1ULL << SLDR_DIR_PIN) | (1ULL << SLDR_EN_PIN);
     gpio_config_t gpio_conf = {
@@ -136,32 +136,32 @@ static inline void slider_init()
     gptimer_event_callbacks_t cb_group;
     cb_group.on_alarm = xISR;
     s_alarm_cfg.flags.auto_reload_on_alarm = 1;
-    gptimer_register_event_callbacks(s_timer_handle, &cb_group, &d_state);
+    gptimer_register_event_callbacks(s_timer_handle, &cb_group, d_state);
 
-    d_state.cur_x = 0;
-    d_state.cur_v = 0;
-    d_state.cur_a = 0;
-    d_state.cur_step = 0;
-    d_state.cur_period = 0;
+    d_state->cur_x = 0;
+    d_state->cur_v = 0;
+    d_state->cur_a = 0;
+    d_state->cur_step = 0;
+    d_state->cur_period = 0;
 
-    d_state.task_x = 50.0; // kludge
-    d_state.task_v = 50.0;
-    d_state.task_a = 50.0;
+    d_state->task_x = 50.0; // kludge
+    d_state->task_v = 50.0;
+    d_state->task_a = 50.0;
 
-    d_state.cmd = SLDR_CMD_NONE;
+    d_state->cmd = SLDR_CMD_NONE;
 }
 
-static inline int slider_task(char * msg, int len)
+static inline int slider_task(char * msg, int len, SliderState * d_state)
 {
 	//int i_ch = 0;
 	if (len <= 0) return len;
 	switch (msg[0])
 	{
 		case 'X':
-			d_state.cmd = SLDR_CMD_START;
-			return sscanf(msg, "X%f S%f A%f\n", &(d_state.task_x), &(d_state.task_v), &(d_state.task_a));
+			d_state->cmd = SLDR_CMD_START;
+			return sscanf(msg, "X%f S%f A%f\n", &(d_state->task_x), &(d_state->task_v), &(d_state->task_a));
 		case 'C':
-			d_state.cmd = SLDR_CMD_STOP;
+			d_state->cmd = SLDR_CMD_STOP;
 			break;
 		default:
 			break;
