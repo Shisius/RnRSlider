@@ -15,6 +15,8 @@
 #define SLDR_DIR_PIN 12
 #define SLDR_EN_PIN 13
 #define TIMER_FREQ 1000000.0
+#define TIMER_MAX_PERIOD 1000000000.0
+#define START_SPEED 
 
 //static uint32_t SLDR_PRECS = 64;
 //static uint32_t SLDR_GEAR_L = 60;
@@ -35,8 +37,10 @@ typedef struct _slider_state
 	bool is_connected;
 	bool write_done;
 	bool data_ready;
+	bool is_running;
+
 	char request[128];
-	char * answer;
+	// char * answer;
 	uint32_t req_len;
 	int cnt;
 	uint32_t handle;
@@ -50,8 +54,14 @@ typedef struct _slider_state
 	float cur_x;
 	float cur_v;
 	float cur_a;
+
+	int cur_x_st;
+	int cur_v_st;
+	int task_a_st;
+
 	uint32_t cur_step;
 	uint32_t cur_period;
+	int64_t accel_time;
 
 	bool dir;
 
@@ -60,11 +70,19 @@ typedef struct _slider_state
 
 //volatile SliderState d_state;
 
-static inline void slider_stop()
+// static inline uint32_t steps2ticks(uint32_t steps)
+// {
+// 	return 
+// }
+
+static inline void slider_stop(SliderState * state)
 {
-	gptimer_stop(s_timer_handle);
-	gptimer_disable(s_timer_handle);
+	if (state->is_running) {
+		gptimer_stop(s_timer_handle);
+		gptimer_disable(s_timer_handle);
+	}
 	gpio_set_level((gpio_num_t)SLDR_STEP_PIN, 0);
+	state->is_running = false;
 }
 
 static inline void slider_enable()
@@ -79,6 +97,7 @@ static inline void slider_disable()
 static inline int slider_start(SliderState * d_state)
 {
 	d_state->cur_step = 0;
+	d_state->accel_time = 0;
 	if (d_state->task_x == d_state->cur_x)
 		return 1;
 	if (d_state->task_x < d_state->cur_x) {
@@ -88,13 +107,15 @@ static inline int slider_start(SliderState * d_state)
 	}
 
 	d_state->task_a = fabs(d_state->task_a);
+	d_state->task_a_st = d_state->task_a * STEPS_PER_MM;
+	if (d_state->task_a_st <= 0) d_state->task_a_st = 1;
 	d_state->task_step = round(fabs(d_state->task_x - d_state->cur_x) * (float)(STEPS_PER_MM));
 	d_state->task_acc_steps = round( (d_state->task_v*d_state->task_v / (2 * d_state->task_a))* (float)(STEPS_PER_MM) );
 	if ( d_state->task_acc_steps*2 > d_state->task_step )
 		d_state->task_acc_steps = d_state->task_step/2;
 	d_state->task_v = sqrt(fabs((float)(d_state->task_acc_steps) * 2 * d_state->task_a / (float)(STEPS_PER_MM) ));
 
-	d_state->cur_period = round(TIMER_FREQ / (d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
+	d_state->cur_period = round(TIMER_FREQ / (10 * d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
 
 	//slider_enable();
 	//vTaskDelay(pdMS_TO_TICKS(10));
@@ -104,6 +125,7 @@ static inline int slider_start(SliderState * d_state)
     gptimer_set_alarm_action(s_timer_handle, &s_alarm_cfg);
 	gptimer_enable(s_timer_handle);
     gptimer_start(s_timer_handle);
+    d_state->is_running = true;
     return 0;
 }
 
@@ -146,9 +168,20 @@ static inline void slider_init(SliderState * d_state)
 
     d_state->task_x = 50.0; // kludge
     d_state->task_v = 50.0;
-    d_state->task_a = 50.0;
+    d_state->task_a = 10.0;
+
+    d_state->cur_x_st = 0;
+    d_state->cur_v_st = 0;
+    d_state->task_a_st = d_state->task_a * STEPS_PER_MM;
+    d_state->accel_time = 0;
 
     d_state->cmd = SLDR_CMD_NONE;
+    d_state->is_running = false;
+
+    d_state->is_connected = false;
+    d_state->write_done = true;
+    d_state->data_ready = false; 
+    d_state->cnt = 0;
 }
 
 static inline int slider_task(char * msg, int len, SliderState * d_state)
@@ -170,3 +203,4 @@ static inline int slider_task(char * msg, int len, SliderState * d_state)
 }
 
 #endif // _SLIDER_H_
+

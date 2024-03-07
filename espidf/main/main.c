@@ -114,7 +114,7 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
          */
         ESP_LOGI(SPP_TAG, "ESP_SPP_DATA_IND_EVT len:%d handle:%"PRIu32,
                  param->data_ind.len, param->data_ind.handle);
-        d_state.handle = param->data_ind.handle;
+        // d_state.handle = param->data_ind.handle;
         ESP_LOGI(SLIDER_TAG, "PARSE RESULT = %d", slider_task((char*)(param->data_ind.data), param->data_ind.len, &d_state));
         if (param->data_ind.len < 128 && !(d_state.data_ready)) {
             d_state.req_len = param->data_ind.len;
@@ -137,11 +137,14 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         ESP_LOGI(SPP_TAG, "ESP_SPP_WRITE_EVT");
         break;
     case ESP_SPP_SRV_OPEN_EVT:
+        d_state.handle = param->srv_open.handle;
+        d_state.is_connected = true;
         ESP_LOGI(SPP_TAG, "ESP_SPP_SRV_OPEN_EVT status:%d handle:%"PRIu32", rem_bda:[%s]", param->srv_open.status,
                  param->srv_open.handle, bda2str(param->srv_open.rem_bda, bda_str, sizeof(bda_str)));
         gettimeofday(&time_old, NULL);
         break;
     case ESP_SPP_SRV_STOP_EVT:
+        d_state.is_connected = false;
         ESP_LOGI(SPP_TAG, "ESP_SPP_SRV_STOP_EVT");
         break;
     case ESP_SPP_UNINIT_EVT:
@@ -215,6 +218,8 @@ static void slider_comm_task(void * data)
     SliderState * state = (SliderState *)(data);
     uint8_t cnt = 0;
     while (1) {
+        state->cur_x = (float)(state->cur_x_st) / (float)(STEPS_PER_MM);
+        state->cur_v = (float)(state->cur_v_st) / (float)(STEPS_PER_MM);
         if (state->data_ready) {
             printf("incoming %ld, %s\n", state->req_len, state->request); // Kludge
             memset(state->request, 0, 128); // Kludge
@@ -222,33 +227,37 @@ static void slider_comm_task(void * data)
             char answer[128];
             sprintf(answer, "hep %3.1f, %3.1f, %3.1f\n", state->task_x, state->task_v, state->task_a); // Kludge
             esp_spp_write(state->handle, strlen(answer), (uint8_t*)(answer));
+            state->write_done = false;
 
             // state->cmd = SLDR_CMD_NONE;
             switch (state->cmd)
             {
                 case SLDR_CMD_START:
+                    if (state->is_running) break;
                     slider_enable();
                     vTaskDelay( pdMS_TO_TICKS(10));
                     if (slider_start(state) != 0) {
-                        slider_stop();
+                        slider_stop(state);
                         slider_disable();
                     }
-                    state->cmd = SLDR_CMD_NONE;
+                    //state->cmd = SLDR_CMD_NONE;
                     break;
                 case SLDR_CMD_STOP:
-                    slider_stop();
+                    slider_stop(state);
                     slider_disable();
-                    state->cmd = SLDR_CMD_NONE;
+                    //state->cmd = SLDR_CMD_NONE;
                     break;
                 default:
                     break;
             }
+            state->cmd = SLDR_CMD_NONE;
         } else {
             cnt++;
-            if (cnt % 10 == 0 && state->write_done) {
+            if (cnt % 10 == 0 && state->write_done && state->is_connected) {
                 char msg[128];
                 sprintf(msg, "X%3.1f S%3.1f\n", state->cur_x, state->cur_v);
-                esp_spp_write(state->handle, strlen(msg), (uint8_t*)(msg)); // Kludge
+                esp_spp_write(state->handle, strlen(msg), (uint8_t*)(msg));
+                state->write_done = false;
             }
             vTaskDelay( pdMS_TO_TICKS(10));
         }
@@ -258,13 +267,6 @@ static void slider_comm_task(void * data)
 
 void app_main(void)
 {
-
-	//SliderState d_state;
-    d_state.is_connected = false;
-    d_state.write_done = false;
-    d_state.data_ready = false; 
-    d_state.cnt = 0;
-
     char bda_str[18] = {0};
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -274,7 +276,7 @@ void app_main(void)
     ESP_ERROR_CHECK( ret );
 
     slider_init(&d_state);
-    xTaskCreate(slider_comm_task, "slidercomm", 2048, &d_state, configMAX_PRIORITIES - 1, NULL); // kludge
+    // xTaskCreate(slider_comm_task, "slidercomm", 2048, &d_state, configMAX_PRIORITIES - 1, NULL); // kludge
 
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
 
@@ -340,7 +342,7 @@ void app_main(void)
 
     ESP_LOGI(SPP_TAG, "Own address:[%s]", bda2str((uint8_t *)esp_bt_dev_get_address(), bda_str, sizeof(bda_str)));
 
-    //xTaskCreate(slider_comm_task, "slidercomm", 2048, &d_state, configMAX_PRIORITIES - 1, NULL);
+    xTaskCreate(slider_comm_task, "slidercomm", 2048, &d_state, configMAX_PRIORITIES - 1, NULL);
 }
 
 static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * data, void * obj)
@@ -352,26 +354,38 @@ static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * da
     state->cur_step++;
 
     if (state->dir)
-        state->cur_x += 1.0/(float)(STEPS_PER_MM);
+        state->cur_x_st++;
     else
-        state->cur_x -= 1.0/(float)(STEPS_PER_MM);
+        state->cur_x_st--;
 
     if (state->cur_step >= state->task_step)
     {
-        slider_stop();
+        slider_stop(state);
         return 0;
     }
 
     if (state->cur_step <= state->task_acc_steps) {
-        state->cur_v = 10; //sqrt(fabs( 2.0 * (state->task_a) * (float)(state->cur_step) / (float)(STEPS_PER_MM) ));
+        state->accel_time += state->cur_period;
+        state->cur_v_st = state->task_a_st * state->accel_time / TIMER_FREQ; 
+        uint32_t fa = TIMER_FREQ / state->task_a_st;
+        uint32_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
+        state->cur_period = fa * ft;
+        //state->cur_v_st = TIMER_FREQ / state->cur_period;
+        //sqrt(fabs( 2.0 * (state->task_a) * (float)(state->cur_step) / (float)(STEPS_PER_MM) ));
     } else if (state->cur_step >= (state->task_step - state->task_acc_steps)) {
+        state->accel_time -= state->cur_period;
+        state->cur_v_st = state->task_a_st * state->accel_time / TIMER_FREQ; 
+        uint32_t fa = TIMER_FREQ / state->task_a_st;
+        uint32_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
+        state->cur_period = fa * ft;
+        //state->cur_v_st = TIMER_FREQ / state->cur_period;
     	//float d_step = (float)((state->task_step)-(state->cur_step));
     	//float v_sqr = fabs( 2.0*(state->task_a)*d_step / ((float)(STEPS_PER_MM)) );
     	//float new_v = sqrt(v_sqr);
-        state->cur_v = 10; //new_v;
+    } else {
+        state->cur_v_st = TIMER_FREQ / state->cur_period;
+        // state->cur_period = state->cur_v_st == 0 ? TIMER_FREQ / 1000 : TIMER_FREQ / state->cur_v_st;
     }
-
-    state->cur_period = 1000; //state->cur_v == 0 ? (float)(TIMER_FREQ) * 1000.0 / (float)(STEPS_PER_MM) : round((float)(TIMER_FREQ) / ((state->cur_v) * (float)(STEPS_PER_MM)));
 
     GPIO.out_w1tc = (1ULL << SLDR_STEP_PIN);
     s_alarm_cfg.alarm_count = state->cur_period;
