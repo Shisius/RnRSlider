@@ -376,16 +376,16 @@ static bool xISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t * even
     if (state->cur_step <= state->task_acc_steps) {
         state->accel_time += state->cur_period;
         state->cur_v_st = state->task_a_st * state->accel_time / TIMER_FREQ; 
-        uint32_t fa = TIMER_FREQ / state->task_a_st;
-        uint32_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
+        uint64_t fa = TIMER_FREQ / state->task_a_st;
+        uint64_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
         state->cur_period = fa * ft;
         //state->cur_v_st = TIMER_FREQ / state->cur_period;
         //sqrt(fabs( 2.0 * (state->task_a) * (float)(state->cur_step) / (float)(STEPS_PER_MM) ));
     } else if (state->cur_step >= (state->task_step - state->task_acc_steps)) {
         state->accel_time -= state->cur_period;
         state->cur_v_st = state->task_a_st * state->accel_time / TIMER_FREQ; 
-        uint32_t fa = TIMER_FREQ / state->task_a_st;
-        uint32_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
+        uint64_t fa = TIMER_FREQ / state->task_a_st;
+        uint64_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
         state->cur_period = fa * ft;
         //state->cur_v_st = TIMER_FREQ / state->cur_period;
     	//float d_step = (float)((state->task_step)-(state->cur_step));

@@ -14,8 +14,8 @@
 #define SLDR_STEP_PIN 14
 #define SLDR_DIR_PIN 12
 #define SLDR_EN_PIN 13
-#define TIMER_FREQ 1000000.0
-#define TIMER_MAX_PERIOD 1000000000.0
+#define TIMER_FREQ 1000000
+#define TIMER_MAX_PERIOD 1000000000
 #define START_SPEED 
 
 //static uint32_t SLDR_PRECS = 64;
@@ -62,7 +62,7 @@ typedef struct _slider_state
 	int task_a_st;
 
 	uint32_t cur_step;
-	uint32_t cur_period;
+	uint64_t cur_period;
 	int64_t accel_time;
 
 	bool dir;
@@ -117,7 +117,7 @@ static inline int slider_start(SliderState * d_state)
 		d_state->task_acc_steps = d_state->task_step/2;
 	d_state->task_v = sqrt(fabs((float)(d_state->task_acc_steps) * 2 * d_state->task_a / (float)(STEPS_PER_MM) ));
 
-	d_state->cur_period = round(TIMER_FREQ / (10 * d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
+	d_state->cur_period = round((float)(TIMER_FREQ) / (10 * d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
 
 	//slider_enable();
 	//vTaskDelay(pdMS_TO_TICKS(10));
