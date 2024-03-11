@@ -20,7 +20,7 @@
 
 //static uint32_t SLDR_PRECS = 64;
 //static uint32_t SLDR_GEAR_L = 60;
-static uint32_t STEPS_PER_MM = 160;//round(SLDR_PRECS*200 / SLDR_GEAR_L);
+static float STEPS_PER_MM = 213.33333;//round(SLDR_PRECS*200 / SLDR_GEAR_L);
 
 static gptimer_handle_t s_timer_handle;
 static gptimer_alarm_config_t s_alarm_cfg = {.reload_count = 0};
@@ -29,7 +29,9 @@ typedef enum
 {
 	SLDR_CMD_NONE,
 	SLDR_CMD_START,
-	SLDR_CMD_STOP
+	SLDR_CMD_STOP,
+	SLDR_CMD_HOLD,
+	SLDR_CMD_ORIG
 } SliderCommands;
 
 typedef struct _slider_state
@@ -122,14 +124,14 @@ static inline int slider_start(SliderState * d_state)
 	gpio_set_level((gpio_num_t)SLDR_DIR_PIN, d_state->dir);
 
 	s_alarm_cfg.alarm_count = d_state->cur_period;
-    gptimer_set_alarm_action(s_timer_handle, &s_alarm_cfg);
-	gptimer_enable(s_timer_handle);
-    gptimer_start(s_timer_handle);
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(s_timer_handle, &s_alarm_cfg));
+	ESP_ERROR_CHECK(gptimer_enable(s_timer_handle));
+    ESP_ERROR_CHECK(gptimer_start(s_timer_handle));
     d_state->is_running = true;
     return 0;
 }
 
-static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * data, void * obj);
+static bool xISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t * data, void * obj);
 
 static inline void slider_init(SliderState * d_state)
 {
@@ -157,8 +159,8 @@ static inline void slider_init(SliderState * d_state)
 
     gptimer_event_callbacks_t cb_group;
     cb_group.on_alarm = xISR;
-    s_alarm_cfg.flags.auto_reload_on_alarm = 1;
-    gptimer_register_event_callbacks(s_timer_handle, &cb_group, d_state);
+    // s_alarm_cfg.flags.auto_reload_on_alarm = 1;
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(s_timer_handle, &cb_group, d_state));
 
     d_state->cur_x = 0;
     d_state->cur_v = 0;
@@ -182,6 +184,8 @@ static inline void slider_init(SliderState * d_state)
     d_state->write_done = true;
     d_state->data_ready = false; 
     d_state->cnt = 0;
+
+    slider_enable();
 }
 
 static inline int slider_task(char * msg, int len, SliderState * d_state)
@@ -195,6 +199,12 @@ static inline int slider_task(char * msg, int len, SliderState * d_state)
 			return sscanf(msg, "X%f S%f A%f\n", &(d_state->task_x), &(d_state->task_v), &(d_state->task_a));
 		case 'C':
 			d_state->cmd = SLDR_CMD_STOP;
+			break;
+		case 'H':
+			d_state->cmd = SLDR_CMD_HOLD;
+			break;
+		case 'O':
+			d_state->cmd = SLDR_CMD_ORIG;
 			break;
 		default:
 			break;

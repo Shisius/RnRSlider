@@ -238,7 +238,7 @@ static void slider_comm_task(void * data)
                     vTaskDelay( pdMS_TO_TICKS(10));
                     if (slider_start(state) != 0) {
                         slider_stop(state);
-                        slider_disable();
+                        // slider_disable();
                     }
                     //state->cmd = SLDR_CMD_NONE;
                     break;
@@ -246,6 +246,15 @@ static void slider_comm_task(void * data)
                     slider_stop(state);
                     slider_disable();
                     //state->cmd = SLDR_CMD_NONE;
+                    break;
+                case SLDR_CMD_HOLD:
+                    slider_stop(state);
+                    slider_enable();
+                    break;
+                case SLDR_CMD_ORIG:
+                    slider_stop(state);
+                    state->cur_x_st = 0;
+                    state->cur_v_st = 0;
                     break;
                 default:
                     break;
@@ -345,7 +354,7 @@ void app_main(void)
     xTaskCreate(slider_comm_task, "slidercomm", 2048, &d_state, configMAX_PRIORITIES - 1, NULL);
 }
 
-static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * data, void * obj)
+static bool xISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t * event_data, void * obj)
 {
     SliderState * state = (SliderState *)(obj);
 
@@ -388,7 +397,8 @@ static bool xISR(struct gptimer_t * timer, const gptimer_alarm_event_data_t * da
     }
 
     GPIO.out_w1tc = (1ULL << SLDR_STEP_PIN);
-    s_alarm_cfg.alarm_count = state->cur_period;
-    gptimer_set_alarm_action(s_timer_handle, &s_alarm_cfg);
+    //s_alarm_cfg.alarm_count = event_data->alarm_value + state->cur_period;
+    gptimer_alarm_config_t alarm_cfg = {.alarm_count = event_data->alarm_value + state->cur_period,};
+    gptimer_set_alarm_action(timer, &alarm_cfg);
     return 1;
 }
