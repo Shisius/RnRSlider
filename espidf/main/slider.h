@@ -10,13 +10,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hal/gpio_ll.h"
+#include "esp_adc/adc_oneshot.h"
 
 #define SLDR_STEP_PIN 14
 #define SLDR_DIR_PIN 12
 #define SLDR_EN_PIN 13
-#define TIMER_FREQ 1000000
-#define TIMER_MAX_PERIOD 1000000000
+static int64_t TIMER_FREQ = 1000000LL;
+static int64_t TIMER_MAX_PERIOD = 1000000000LL;
 #define START_SPEED 
+#define ADC_V_CHANNEL ADC_CHANNEL_0
+
+static float ADC2UVOLTS= 21.0 * 2.45e6 / (float)(1 << 12);
 
 //static uint32_t SLDR_PRECS = 64;
 //static uint32_t SLDR_GEAR_L = 60;
@@ -24,6 +28,8 @@ static float STEPS_PER_MM = 213.33333;//round(SLDR_PRECS*200 / SLDR_GEAR_L);
 
 static gptimer_handle_t s_timer_handle;
 static gptimer_alarm_config_t s_alarm_cfg = {.reload_count = 0};
+
+static adc_oneshot_unit_handle_t s_adc_v_handle;
 
 typedef enum 
 {
@@ -50,22 +56,24 @@ typedef struct _slider_state
 	float task_x;
 	float task_v;
 	float task_a;
-	uint32_t task_step;
-	uint32_t task_acc_steps;
+	int64_t task_step;
+	int64_t task_acc_steps;
 
 	float cur_x;
 	float cur_v;
 	float cur_a;
 
-	int cur_x_st;
-	int cur_v_st;
-	int task_a_st;
+	int64_t cur_x_st;
+	int64_t cur_v_st;
+	int64_t task_a_st;
 
-	uint32_t cur_step;
-	uint64_t cur_period;
+	int64_t cur_step;
+	int64_t cur_period;
 	int64_t accel_time;
 
 	bool dir;
+
+	float voltage;
 
 	uint8_t cmd;
 } SliderState;
@@ -77,11 +85,14 @@ typedef struct _slider_state
 // 	return 
 // }
 
+static bool xISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t * data, void * obj);
+
 static inline void slider_stop(SliderState * state)
 {
 	if (state->is_running) {
 		gptimer_stop(s_timer_handle);
 		gptimer_disable(s_timer_handle);
+		gptimer_del_timer(s_timer_handle);
 	}
 	gpio_set_level((gpio_num_t)SLDR_STEP_PIN, 0);
 	state->is_running = false;
@@ -109,7 +120,7 @@ static inline int slider_start(SliderState * d_state)
 	}
 
 	d_state->task_a = fabs(d_state->task_a);
-	d_state->task_a_st = d_state->task_a * STEPS_PER_MM;
+	d_state->task_a_st = d_state->task_a * round(STEPS_PER_MM);
 	if (d_state->task_a_st <= 0) d_state->task_a_st = 1;
 	d_state->task_step = round(fabs(d_state->task_x - d_state->cur_x) * (float)(STEPS_PER_MM));
 	d_state->task_acc_steps = round( (d_state->task_v*d_state->task_v / (2 * d_state->task_a))* (float)(STEPS_PER_MM) );
@@ -117,12 +128,27 @@ static inline int slider_start(SliderState * d_state)
 		d_state->task_acc_steps = d_state->task_step/2;
 	d_state->task_v = sqrt(fabs((float)(d_state->task_acc_steps) * 2 * d_state->task_a / (float)(STEPS_PER_MM) ));
 
-	d_state->cur_period = round((float)(TIMER_FREQ) / (10 * d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
+	d_state->cur_period = round((float)(TIMER_FREQ) / (20 * d_state->task_v * (float)(STEPS_PER_MM)/d_state->task_acc_steps));
 
 	//slider_enable();
 	//vTaskDelay(pdMS_TO_TICKS(10));
 	gpio_set_level((gpio_num_t)SLDR_DIR_PIN, d_state->dir);
 
+	gptimer_config_t timer_conf = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = TIMER_FREQ,
+    };
+
+    timer_conf.flags.intr_shared = false;
+
+	ESP_ERROR_CHECK(gptimer_new_timer(&timer_conf, &s_timer_handle));
+
+    gptimer_event_callbacks_t cb_group;
+    cb_group.on_alarm = xISR;
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(s_timer_handle, &cb_group, d_state));
+
+    s_alarm_cfg.flags.auto_reload_on_alarm = 0;
 	s_alarm_cfg.alarm_count = d_state->cur_period;
     ESP_ERROR_CHECK(gptimer_set_alarm_action(s_timer_handle, &s_alarm_cfg));
 	ESP_ERROR_CHECK(gptimer_enable(s_timer_handle));
@@ -130,8 +156,6 @@ static inline int slider_start(SliderState * d_state)
     d_state->is_running = true;
     return 0;
 }
-
-static bool xISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t * data, void * obj);
 
 static inline void slider_init(SliderState * d_state)
 {
@@ -184,6 +208,18 @@ static inline void slider_init(SliderState * d_state)
     d_state->write_done = true;
     d_state->data_ready = false; 
     d_state->cnt = 0;
+
+    adc_oneshot_unit_init_cfg_t adc_v_config = {
+    	.unit_id = ADC_UNIT_1,
+    	.ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_v_config, &s_adc_v_handle));
+    adc_oneshot_chan_cfg_t adc_v_chan = {
+    	.bitwidth = ADC_BITWIDTH_12,
+    	.atten = ADC_ATTEN_DB_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc_v_handle, ADC_V_CHANNEL, &adc_v_chan));
+    d_state->voltage = 0;
 
     slider_enable();
 }

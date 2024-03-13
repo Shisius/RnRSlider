@@ -220,6 +220,9 @@ static void slider_comm_task(void * data)
     while (1) {
         state->cur_x = (float)(state->cur_x_st) / (float)(STEPS_PER_MM);
         state->cur_v = (float)(state->cur_v_st) / (float)(STEPS_PER_MM);
+        int adc_val = 0;
+        ESP_ERROR_CHECK(adc_oneshot_read(s_adc_v_handle, ADC_V_CHANNEL, &adc_val));
+        state->voltage = (ADC2UVOLTS * (float)(adc_val)) * 1e-6;
         if (state->data_ready) {
             printf("incoming %ld, %s\n", state->req_len, state->request); // Kludge
             memset(state->request, 0, 128); // Kludge
@@ -264,7 +267,7 @@ static void slider_comm_task(void * data)
             cnt++;
             if (cnt % 10 == 0 && state->write_done && state->is_connected) {
                 char msg[128];
-                sprintf(msg, "X%3.1f S%3.1f\n", state->cur_x, state->cur_v);
+                sprintf(msg, "X%3.1f S%3.1f U%3.1f\n", state->cur_x, state->cur_v, state->voltage);
                 esp_spp_write(state->handle, strlen(msg), (uint8_t*)(msg));
                 state->write_done = false;
             }
@@ -376,29 +379,30 @@ static bool xISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t * even
     if (state->cur_step <= state->task_acc_steps) {
         state->accel_time += state->cur_period;
         state->cur_v_st = state->task_a_st * state->accel_time / TIMER_FREQ; 
-        uint64_t fa = TIMER_FREQ / state->task_a_st;
-        uint64_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
-        state->cur_period = fa * ft;
-        //state->cur_v_st = TIMER_FREQ / state->cur_period;
+        //int64_t fa = TIMER_FREQ / state->task_a_st;
+        //int64_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
+        state->cur_period = (TIMER_FREQ * TIMER_FREQ) / (state->task_a_st * state->accel_time) ;// fa * ft;
+        state->cur_v_st = TIMER_FREQ / state->cur_period;
         //sqrt(fabs( 2.0 * (state->task_a) * (float)(state->cur_step) / (float)(STEPS_PER_MM) ));
     } else if (state->cur_step >= (state->task_step - state->task_acc_steps)) {
         state->accel_time -= state->cur_period;
         state->cur_v_st = state->task_a_st * state->accel_time / TIMER_FREQ; 
-        uint64_t fa = TIMER_FREQ / state->task_a_st;
-        uint64_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
-        state->cur_period = fa * ft;
-        //state->cur_v_st = TIMER_FREQ / state->cur_period;
+        //int64_t fa = TIMER_FREQ / state->task_a_st;
+        //int64_t ft = state->accel_time <= (fa / (TIMER_MAX_PERIOD/TIMER_FREQ)) ? TIMER_MAX_PERIOD / fa : TIMER_FREQ / state->accel_time;
+        state->cur_period = (TIMER_FREQ * TIMER_FREQ) / (state->task_a_st * state->accel_time) ;// fa * ft;
+        state->cur_v_st = TIMER_FREQ / state->cur_period;
     	//float d_step = (float)((state->task_step)-(state->cur_step));
     	//float v_sqr = fabs( 2.0*(state->task_a)*d_step / ((float)(STEPS_PER_MM)) );
     	//float new_v = sqrt(v_sqr);
     } else {
-        state->cur_v_st = TIMER_FREQ / state->cur_period;
-        // state->cur_period = state->cur_v_st == 0 ? TIMER_FREQ / 1000 : TIMER_FREQ / state->cur_v_st;
+        //state->cur_v_st = state->task_v * STEPS_PER_MM
+        state->cur_period = state->cur_v_st == 0 ? TIMER_FREQ / 1000 : TIMER_FREQ / state->cur_v_st;
+        state->cur_v_st = TIMER_FREQ / state->cur_period;     
     }
 
     GPIO.out_w1tc = (1ULL << SLDR_STEP_PIN);
-    //s_alarm_cfg.alarm_count = event_data->alarm_value + state->cur_period;
-    gptimer_alarm_config_t alarm_cfg = {.alarm_count = event_data->alarm_value + state->cur_period,};
-    gptimer_set_alarm_action(timer, &alarm_cfg);
+    s_alarm_cfg.alarm_count = event_data->alarm_value + state->cur_period;
+    //gptimer_alarm_config_t alarm_cfg = {.alarm_count = /*event_data->alarm_value + */state->cur_period, .flags.auto_reload_on_alarm = 1, .reload_count = 0};
+    gptimer_set_alarm_action(timer, &s_alarm_cfg);
     return 1;
 }
